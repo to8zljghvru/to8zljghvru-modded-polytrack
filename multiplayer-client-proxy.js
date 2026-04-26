@@ -1,35 +1,51 @@
 (function () {
-  const REMOTE_PREFIX = "https://vps.kodub.com/";
+  const REMOTE_HOST = "vps.kodub.com";
   const sameOriginBase = /^https?:/i.test(window.location.origin) ? window.location.origin : null;
   const configuredBase = window.polytrackModConfiguration?.multiplayerServerUrl;
   const fallbackBase = "http://127.0.0.1:3000";
   const httpBase = (configuredBase || sameOriginBase || fallbackBase).replace(/\/+$/, "");
 
+  function extractRemotePath(url) {
+    if (typeof url !== "string") {
+      return null;
+    }
+
+    try {
+      const parsed = new URL(url, window.location.href);
+      if (parsed.hostname !== REMOTE_HOST) {
+        return null;
+      }
+      return parsed.pathname.replace(/^\/+/, "") + parsed.search + parsed.hash;
+    } catch {
+      return null;
+    }
+  }
+
   function toWebSocketUrl(url) {
-    if (!url.startsWith(REMOTE_PREFIX)) {
+    const remotePath = extractRemotePath(url);
+    if (!remotePath) {
       return url;
     }
 
-    if (!/\/multiplayer\/(host|join)$/.test(url)) {
+    if (!/(^|\/)multiplayer\/(host|join)$/.test(remotePath.replace(/[?#].*$/, ""))) {
       return url;
     }
 
-    const path = url.slice(REMOTE_PREFIX.length).replace(/^\/+/, "");
     const websocketBase = httpBase.replace(/^http:/i, "ws:").replace(/^https:/i, "wss:");
-    return websocketBase + "/" + path;
+    return websocketBase + "/" + remotePath;
   }
 
   function toHttpUrl(url) {
-    if (!url.startsWith(REMOTE_PREFIX)) {
+    const remotePath = extractRemotePath(url);
+    if (!remotePath) {
       return url;
     }
 
-    const path = url.slice(REMOTE_PREFIX.length).replace(/^\/+/, "");
-    if (!path.startsWith("iceServers")) {
+    if (!remotePath.startsWith("iceServers") && !remotePath.startsWith("v6/iceServers")) {
       return url;
     }
 
-    return httpBase + "/" + path;
+    return httpBase + "/" + remotePath;
   }
 
   const NativeWebSocket = window.WebSocket;
