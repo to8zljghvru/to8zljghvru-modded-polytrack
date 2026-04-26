@@ -350,16 +350,17 @@ const server = http.createServer((request, response) => {
   const requestUrl = new URL(request.url, `http://${request.headers.host || "localhost"}`);
   const apiPath = normalizeApiPath(requestUrl.pathname);
 
+
+  if (request.method === "GET" && apiPath === "/healthz") {
+    response.writeHead(200, { "Content-Type": "text/plain" });
+    return response.end("ok");
+  }
+
   if (request.method === "GET" && apiPath === "/health") {
     sendJson(response, 200, {
       ok: true,
       invites: invites.size,
     });
-    return;
-  }
-
-  if (request.method === "GET" && apiPath === "/healthz") {
-    sendText(response, 200, "ok");
     return;
   }
 
