@@ -358,6 +358,11 @@ const server = http.createServer((request, response) => {
     return;
   }
 
+  if (request.method === "GET" && apiPath === "/healthz") {
+    sendText(response, 200, "ok");
+    return;
+  }
+
   if (request.method === "GET" && apiPath === "/iceServers") {
     sendJson(response, 200, ICE_SERVERS);
     return;
