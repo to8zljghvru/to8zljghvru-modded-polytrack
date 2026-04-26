@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PolyTrack Multiplayer Debug</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        background: #111827;
+        color: #f9fafb;
+        margin: 0;
+        padding: 24px;
+      }
+
+      main {
+        max-width: 860px;
+        margin: 0 auto;
+      }
+
+      button {
+        background: #2563eb;
+        color: white;
+        border: 0;
+        padding: 10px 16px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 14px;
+      }
+
+      pre {
+        white-space: pre-wrap;
+        background: #0b1220;
+        border: 1px solid #1f2937;
+        border-radius: 8px;
+        padding: 16px;
+        min-height: 280px;
+      }
+    </style>
+    <script defer src="./multiplayer-client-proxy.js"></script>
+    <script defer src="./multiplayer-debug.js"></script>
+  </head>
+  <body>
+    <main>
+      <h1>PolyTrack Multiplayer Debug</h1>
+      <p>This checks the same invite creation path the game uses.</p>
+      <button id="run">Run Debug Check</button>
+      <pre id="log"></pre>
+    </main>
+  </body>
+</html>
