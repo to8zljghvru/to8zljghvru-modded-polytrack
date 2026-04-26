@@ -21,7 +21,7 @@
     }
 
     await new Promise((resolve) => {
-      const socket = new WebSocket("wss://vps.kodub.com/v6/multiplayer/host");
+      const socket = new WebSocket("https://vps.kodub.com/v6/multiplayer/host");
       let settled = false;
 
       function finish() {
