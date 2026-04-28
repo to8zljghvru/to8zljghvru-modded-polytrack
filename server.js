@@ -3,6 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const http = require("http");
+const https = require("https");
 const crypto = require("crypto");
 const { WebSocketServer } = require("ws");
 
@@ -10,7 +11,9 @@ const HOST = process.env.POLYTRACK_HOST || "0.0.0.0";
 const PORT = Number.parseInt(process.env.PORT || process.env.POLYTRACK_PORT || "3000", 10);
 const ROOT_DIR = __dirname;
 const DEFAULT_MAX_AGE_MS = 10 * 60 * 1000;
+const ICE_CACHE_TTL_MS = Number.parseInt(process.env.POLYTRACK_ICE_CACHE_TTL_MS || "300000", 10);
 const DEFAULT_ICE_SERVERS = [{ urls: ["stun:stun.l.google.com:19302"] }];
+const METERED_TURN_CREDENTIALS_URL = process.env.METERED_TURN_CREDENTIALS_URL || null;
 
 const CONTENT_TYPES = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -32,7 +35,7 @@ const CONTENT_TYPES = new Map([
   [".track", "text/plain; charset=utf-8"],
 ]);
 
-function loadIceServers() {
+function loadStaticIceServers() {
   if (!process.env.POLYTRACK_ICE_SERVERS) {
     return DEFAULT_ICE_SERVERS;
   }
@@ -49,7 +52,73 @@ function loadIceServers() {
   }
 }
 
-const ICE_SERVERS = loadIceServers();
+const STATIC_ICE_SERVERS = loadStaticIceServers();
+let iceServerCache = {
+  expiresAt: 0,
+  value: STATIC_ICE_SERVERS,
+};
+
+function fetchJson(url) {
+  return new Promise((resolve, reject) => {
+    const transport = url.startsWith("https://") ? https : http;
+    const request = transport.get(url, (response) => {
+      if (response.statusCode == null) {
+        reject(new Error("Missing response status code"));
+        return;
+      }
+
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        response.resume();
+        reject(new Error(`Unexpected status code ${response.statusCode}`));
+        return;
+      }
+
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        body += chunk;
+      });
+      response.on("end", () => {
+        try {
+          resolve(JSON.parse(body));
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+
+    request.on("error", reject);
+    request.setTimeout(10000, () => {
+      request.destroy(new Error("Timed out while fetching ICE servers"));
+    });
+  });
+}
+
+async function resolveIceServers() {
+  if (!METERED_TURN_CREDENTIALS_URL) {
+    return STATIC_ICE_SERVERS;
+  }
+
+  if (iceServerCache.expiresAt > Date.now()) {
+    return iceServerCache.value;
+  }
+
+  try {
+    const fetchedIceServers = await fetchJson(METERED_TURN_CREDENTIALS_URL);
+    if (!Array.isArray(fetchedIceServers)) {
+      throw new Error("TURN credential response was not an array");
+    }
+
+    iceServerCache = {
+      expiresAt: Date.now() + ICE_CACHE_TTL_MS,
+      value: fetchedIceServers,
+    };
+    return fetchedIceServers;
+  } catch (error) {
+    console.warn("Failed to fetch TURN credentials, falling back to static ICE servers:", error.message);
+    return STATIC_ICE_SERVERS;
+  }
+}
 
 function sendJson(response, statusCode, payload) {
   const body = JSON.stringify(payload);
@@ -281,7 +350,7 @@ function handleHostMessage(hostSocket, rawMessage) {
   hostSocket.close();
 }
 
-function handleJoinInit(joinSocket, rawMessage) {
+async function handleJoinInit(joinSocket, rawMessage) {
   const message = safeJsonParse(rawMessage);
   if (!message || typeof message !== "object") {
     joinSocket.close();
@@ -312,6 +381,7 @@ function handleJoinInit(joinSocket, rawMessage) {
   };
   invite.pendingJoins.set(sessionId, session);
   joinSocketToSession.set(joinSocket, sessionId);
+  const iceServers = await resolveIceServers();
 
   websocketJson(invite.hostSocket, {
     type: "joinInvite",
@@ -322,14 +392,14 @@ function handleJoinInit(joinSocket, rawMessage) {
     nickname: message.nickname,
     countryCode: message.countryCode ?? null,
     carStyle: message.carStyle,
-    iceServers: ICE_SERVERS,
+    iceServers,
   });
 }
 
-function handleJoinMessage(joinSocket, rawMessage) {
+async function handleJoinMessage(joinSocket, rawMessage) {
   const boundSession = findSessionForJoinSocket(joinSocket);
   if (!boundSession) {
-    handleJoinInit(joinSocket, rawMessage);
+    await handleJoinInit(joinSocket, rawMessage);
     return;
   }
 
@@ -346,14 +416,17 @@ function handleJoinMessage(joinSocket, rawMessage) {
   });
 }
 
-const server = http.createServer((request, response) => {
+const server = http.createServer(async (request, response) => {
   const requestUrl = new URL(request.url, `http://${request.headers.host || "localhost"}`);
   const apiPath = normalizeApiPath(requestUrl.pathname);
 
-
   if (request.method === "GET" && apiPath === "/healthz") {
-    response.writeHead(200, { "Content-Type": "text/plain" });
-    return response.end("ok");
+    response.writeHead(200, {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-store",
+    });
+    response.end("ok");
+    return;
   }
 
   if (request.method === "GET" && apiPath === "/health") {
@@ -365,7 +438,7 @@ const server = http.createServer((request, response) => {
   }
 
   if (request.method === "GET" && apiPath === "/iceServers") {
-    sendJson(response, 200, ICE_SERVERS);
+    sendJson(response, 200, await resolveIceServers());
     return;
   }
 
@@ -427,7 +500,12 @@ hostWss.on("connection", (socket) => {
 });
 
 joinWss.on("connection", (socket) => {
-  socket.on("message", (buffer) => handleJoinMessage(socket, buffer.toString()));
+  socket.on("message", (buffer) => {
+    handleJoinMessage(socket, buffer.toString()).catch((error) => {
+      console.error("Join socket handling failed:", error);
+      socket.close();
+    });
+  });
   socket.on("close", () => {
     const boundSession = findSessionForJoinSocket(socket);
     if (boundSession) {
@@ -454,5 +532,9 @@ server.on("upgrade", (request, socket, head) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`PolyTrack multiplayer server listening on http://${HOST}:${PORT}`);
-  console.log("ICE servers:", JSON.stringify(ICE_SERVERS));
+  if (METERED_TURN_CREDENTIALS_URL) {
+    console.log("ICE servers: dynamic TURN credentials via METERED_TURN_CREDENTIALS_URL");
+  } else {
+    console.log("ICE servers:", JSON.stringify(STATIC_ICE_SERVERS));
+  }
 });
